@@ -52,7 +52,7 @@ const INFRACTION_DECAY_TIME = 20 * 24 * 60 * 60 * 1000; // 20 días
 const blockedUsers = new Map();
 
 // ---------------- CLIENT READY ----------------
-client.once('ready', () => {
+client.once('clientReady', () => {
     console.log(`✅ Bot coordinador activo como ${client.user.tag}`);
 });
 
