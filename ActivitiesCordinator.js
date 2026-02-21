@@ -32,7 +32,8 @@ app.listen(PORT, () => console.log(`🌐 Servidor web activo en puerto ${PORT}`)
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildPresences // <-- necesario para detectar activities
     ]
 });
 
@@ -66,7 +67,6 @@ async function applyInfractionDecay(userData) {
         userData.count = Math.max(0, userData.count - decaySteps);
         userData.lastInfraction = new Date(userData.lastInfraction.getTime() + decaySteps * INFRACTION_DECAY_TIME);
 
-        // Si no hay infracciones ni timeouts, borramos el registro
         if (userData.count === 0 && userData.timeouts === 0) {
             await Infraction.deleteOne({ userId: userData.userId });
             return null;
@@ -82,7 +82,6 @@ async function handleActivity(member, name, channel) {
     if (allowedActivities.includes(name)) return;
     if (blockedUsers.has(member.id)) return;
 
-    // Buscar o crear usuario en Mongo
     let userData = await Infraction.findOne({ userId: member.id });
     if (userData) userData = await applyInfractionDecay(userData);
 
@@ -90,7 +89,6 @@ async function handleActivity(member, name, channel) {
         userData = new Infraction({ userId: member.id });
     }
 
-    // Aumentamos infracciones
     userData.count++;
     userData.lastInfraction = new Date();
     await userData.save();
@@ -103,7 +101,6 @@ async function handleActivity(member, name, channel) {
         );
     } catch {}
 
-    // Timeout y ban
     if (userData.count >= MAX_INFRACTIONS) {
         userData.timeouts++;
         userData.count = 0;
@@ -143,13 +140,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
     for (const name of newActivities) {
         if (!oldActivities.includes(name)) {
+            console.log(`[Actividad detectada] Usuario: ${member.user.tag}, Actividad: ${name}`);
             await handleActivity(member, name, newState.channel);
         }
     }
 });
-
-// ---------------- LOGIN ----------------
-client.login(process.env.DISCORD_TOKEN);
 
 // ---------------- PRUEBAS ----------------
 client.on('voiceStateUpdate', async (oldState, newState) => {
@@ -161,8 +156,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
     for (const name of newActivities) {
         if (!oldActivities.includes(name)) {
-            console.log(`[Actividad detectada] Usuario: ${member.user.tag}, Actividad: ${name}`);
+            console.log(`[PRUEBA] Usuario: ${member.user.tag}, Actividad detectada: ${name}`);
             await handleActivity(member, name, newState.channel);
         }
     }
 });
+
+// ---------------- LOGIN ----------------
+client.login(process.env.DISCORD_TOKEN);
