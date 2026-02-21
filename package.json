@@ -1,0 +1,14 @@
+{
+    "name": "activitiescordinator",
+    "version": "1.0.0",
+    "main": "ActivitiesCordinator.js",
+    "scripts": {
+        "start": "node ActivitiesCordinator.js"
+    },
+    "dependencies": {
+        "discord.js": "^14.x",
+        "express": "^4.x",
+        "mongoose": "^7.x",
+        "dotenv": "^16.x"
+    }
+}
