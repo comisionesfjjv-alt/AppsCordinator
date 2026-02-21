@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const fs = require('fs');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
 // ---------------- keepAlive ----------------
