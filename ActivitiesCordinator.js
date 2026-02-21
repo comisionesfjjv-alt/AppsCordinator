@@ -150,3 +150,19 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
 // ---------------- LOGIN ----------------
 client.login(process.env.DISCORD_TOKEN);
+
+// ---------------- PRUEBAS ----------------
+client.on('voiceStateUpdate', async (oldState, newState) => {
+    const member = newState.member;
+    if (!member || member.user.bot) return;
+
+    const oldActivities = oldState?.activities?.map(a => a.name) || [];
+    const newActivities = newState?.activities?.map(a => a.name) || [];
+
+    for (const name of newActivities) {
+        if (!oldActivities.includes(name)) {
+            console.log(`[Actividad detectada] Usuario: ${member.user.tag}, Actividad: ${name}`);
+            await handleActivity(member, name, newState.channel);
+        }
+    }
+});
