@@ -1,21 +1,34 @@
+// ---------------- IMPORTS ----------------
 const { Client, GatewayIntentBits } = require('discord.js');
-const fs = require('fs');
 const mongoose = require('mongoose');
 require('dotenv').config();
-
-// ---------------- keepAlive ----------------
 const express = require('express');
+
+// ---------------- MONGODB ----------------
+mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+})
+.then(() => console.log("🟢 Conectado a MongoDB Atlas"))
+.catch(err => console.error("🔴 Error conectando a MongoDB:", err));
+
+// ---------------- ESQUEMA ----------------
+const infractionSchema = new mongoose.Schema({
+    userId: { type: String, required: true },
+    count: { type: Number, default: 0 },
+    lastInfraction: { type: Date, default: Date.now },
+    timeouts: { type: Number, default: 0 }
+});
+
+const Infraction = mongoose.model('Infraction', infractionSchema);
+
+// ---------------- KEEP ALIVE ----------------
 const app = express();
-
-app.get('/', (req, res) => {
-    res.send('Bot activo');
-});
-
+app.get('/', (req, res) => res.send('Bot activo'));
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🌐 Servidor web activo en puerto ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🌐 Servidor web activo en puerto ${PORT}`));
 
+// ---------------- CLIENT ----------------
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -23,84 +36,64 @@ const client = new Client({
     ]
 });
 
-// ---------------- Configuración ----------------
+// ---------------- CONFIGURACIÓN ----------------
 const allowedActivities = [
     'Lofi',
     'Whiteboard',
     'TuneIn Radio & Podcasts'
 ];
 
-const PERMISSION_RESET_TIME = 30 * 1000; // 30 segundos para resetear permisos después de bloquear al usuario
-const MAX_INFRACTIONS = 3; // Número de infracciones antes de aplicar timeout
-const TIMEOUT_DURATION = 4 * 60 * 60 * 1000; // 4 horas de timeout
-const MAX_TIMEOUTS = 3; // Número de timeouts antes de banear al usuario
-
+const PERMISSION_RESET_TIME = 30 * 1000; // 30s
+const MAX_INFRACTIONS = 3;
+const TIMEOUT_DURATION = 4 * 60 * 60 * 1000; // 4h
+const MAX_TIMEOUTS = 3;
 const INFRACTION_DECAY_TIME = 20 * 24 * 60 * 60 * 1000; // 20 días
 
-// ---------------- Archivo de datos ----------------
-const DATA_FILE = './activityData.json';
-let data = { infractions: {}, timeouts: {} };
+const blockedUsers = new Map();
 
-if (fs.existsSync(DATA_FILE)) {
-    data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-}
-
-// Guardar datos en el archivo
-function saveData() {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-const blockedUsers = new Map(); // Map para rastrear usuarios bloqueados temporalmente
-
-// ---------------- Inicialización ----------------
+// ---------------- CLIENT READY ----------------
 client.once('ready', () => {
     console.log(`✅ Bot coordinador activo como ${client.user.tag}`);
 });
 
-// ---------------- Función para aplicar decay ----------------
-function applyInfractionDecay(userId) {
-    const userData = data.infractions[userId];
-    if (!userData) return;
-
+// ---------------- FUNCIONES ----------------
+async function applyInfractionDecay(userData) {
     const now = Date.now();
-    const timePassed = now - userData.lastInfraction;
-
-    // Calculamos cuántos periodos de decay han pasado desde la última infracción
+    const timePassed = now - userData.lastInfraction.getTime();
     const decaySteps = Math.floor(timePassed / INFRACTION_DECAY_TIME);
 
     if (decaySteps > 0) {
         userData.count = Math.max(0, userData.count - decaySteps);
+        userData.lastInfraction = new Date(userData.lastInfraction.getTime() + decaySteps * INFRACTION_DECAY_TIME);
 
-        // Ajustamos la fecha hacia adelante según lo descontado
-        userData.lastInfraction += decaySteps * INFRACTION_DECAY_TIME;
-
-        if (userData.count === 0) {
-            delete data.infractions[userId];
+        // Si no hay infracciones ni timeouts, borramos el registro
+        if (userData.count === 0 && userData.timeouts === 0) {
+            await Infraction.deleteOne({ userId: userData.userId });
+            return null;
+        } else {
+            await userData.save();
         }
-
-        saveData();
     }
+
+    return userData;
 }
 
-// ---------------- Control principal ----------------
 async function handleActivity(member, name, channel) {
-
     if (allowedActivities.includes(name)) return;
     if (blockedUsers.has(member.id)) return;
 
-    applyInfractionDecay(member.id);
-
-    let userData = data.infractions[member.id];
+    // Buscar o crear usuario en Mongo
+    let userData = await Infraction.findOne({ userId: member.id });
+    if (userData) userData = await applyInfractionDecay(userData);
 
     if (!userData) {
-        userData = { count: 0, lastInfraction: Date.now() };
+        userData = new Infraction({ userId: member.id });
     }
 
+    // Aumentamos infracciones
     userData.count++;
-    userData.lastInfraction = Date.now();
-
-    data.infractions[member.id] = userData;
-    saveData();
+    userData.lastInfraction = new Date();
+    await userData.save();
 
     try {
         await member.send(
@@ -110,22 +103,18 @@ async function handleActivity(member, name, channel) {
         );
     } catch {}
 
-    // Si el usuario excede el límite de infracciones, aplicar timeout y potencialmente ban
+    // Timeout y ban
     if (userData.count >= MAX_INFRACTIONS) {
-
-        let countTimeouts = data.timeouts[member.id] || 0;
-        countTimeouts++;
-        data.timeouts[member.id] = countTimeouts;
-
-        delete data.infractions[member.id];
-        saveData();
+        userData.timeouts++;
+        userData.count = 0;
+        await userData.save();
 
         try {
             await member.timeout(TIMEOUT_DURATION, 'Exceder límite de actividades prohibidas');
             await member.send(`⏱ Has recibido un timeout de 4 horas por iniciar actividades no permitidas.`);
         } catch {}
 
-        if (countTimeouts >= MAX_TIMEOUTS) {
+        if (userData.timeouts >= MAX_TIMEOUTS) {
             try {
                 await member.ban({ reason: 'Exceder límite de timeouts por actividades prohibidas' });
             } catch {}
@@ -135,33 +124,29 @@ async function handleActivity(member, name, channel) {
     blockedUsers.set(member.id, true);
 
     try {
-        await channel.permissionOverwrites.edit(member, {
-            UseApplicationCommands: false
-        });
+        await channel.permissionOverwrites.edit(member, { UseApplicationCommands: false });
     } catch {}
 
     setTimeout(async () => {
-        try {
-            await channel.permissionOverwrites.delete(member.id);
-        } catch {}
+        try { await channel.permissionOverwrites.delete(member.id); } catch {}
         blockedUsers.delete(member.id);
     }, PERMISSION_RESET_TIME);
 }
 
-// ---------------- Evento principal ----------------
+// ---------------- EVENTO ----------------
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const member = newState.member;
-    if (!member) return;
-    if (member.user.bot) return;
+    if (!member || member.user.bot) return;
 
     const oldActivities = oldState?.activities?.map(a => a.name) || [];
     const newActivities = newState?.activities?.map(a => a.name) || [];
 
-    newActivities.forEach(async (name) => {
+    for (const name of newActivities) {
         if (!oldActivities.includes(name)) {
             await handleActivity(member, name, newState.channel);
         }
-    });
+    }
 });
 
+// ---------------- LOGIN ----------------
 client.login(process.env.DISCORD_TOKEN);
