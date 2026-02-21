@@ -137,6 +137,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
     const oldActivities = oldState?.activities?.map(a => a.name) || [];
     const newActivities = newState?.activities?.map(a => a.name) || [];
+    console.log(`[DEBUG] ${member.user.tag} cambió de actividades: old=${oldActivities}, new=${newActivities}`);
 
     for (const name of newActivities) {
         if (!oldActivities.includes(name)) {
