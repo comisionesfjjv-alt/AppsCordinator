@@ -1,5 +1,5 @@
 // ---------------- IMPORTS ----------------
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events } = require('discord.js');
 const mongoose = require('mongoose');
 require('dotenv').config();
 const express = require('express');
@@ -19,7 +19,6 @@ const infractionSchema = new mongoose.Schema({
     lastInfraction: { type: Date, default: Date.now },
     timeouts: { type: Number, default: 0 }
 });
-
 const Infraction = mongoose.model('Infraction', infractionSchema);
 
 // ---------------- KEEP ALIVE ----------------
@@ -32,18 +31,11 @@ app.listen(PORT, () => console.log(`🌐 Servidor web activo en puerto ${PORT}`)
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildPresences // <-- necesario para detectar activities
+        GatewayIntentBits.GuildVoiceStates
     ]
 });
 
 // ---------------- CONFIGURACIÓN ----------------
-const allowedActivities = [
-    'Lofi',
-    'Whiteboard',
-    'TuneIn Radio & Podcasts'
-];
-
 const PERMISSION_RESET_TIME = 30 * 1000; // 30s
 const MAX_INFRACTIONS = 3;
 const TIMEOUT_DURATION = 4 * 60 * 60 * 1000; // 4h
@@ -51,6 +43,7 @@ const MAX_TIMEOUTS = 3;
 const INFRACTION_DECAY_TIME = 20 * 24 * 60 * 60 * 1000; // 20 días
 
 const blockedUsers = new Map();
+const MOD_CHANNEL_ID = process.env.MOD_CHANNEL_ID; // Canal donde se envían alertas
 
 // ---------------- CLIENT READY ----------------
 client.once('clientReady', () => {
@@ -74,20 +67,13 @@ async function applyInfractionDecay(userData) {
             await userData.save();
         }
     }
-
     return userData;
 }
 
-async function handleActivity(member, name, channel) {
-    if (allowedActivities.includes(name)) return;
-    if (blockedUsers.has(member.id)) return;
-
+async function applyInfraction(member, reason) {
     let userData = await Infraction.findOne({ userId: member.id });
     if (userData) userData = await applyInfractionDecay(userData);
-
-    if (!userData) {
-        userData = new Infraction({ userId: member.id });
-    }
+    if (!userData) userData = new Infraction({ userId: member.id });
 
     userData.count++;
     userData.lastInfraction = new Date();
@@ -95,8 +81,7 @@ async function handleActivity(member, name, channel) {
 
     try {
         await member.send(
-            `❌ La actividad "${name}" no está permitida.\n` +
-            `✅ Actividades permitidas: ${allowedActivities.join(', ')}\n` +
+            `❌ Has recibido una infracción: ${reason}\n` +
             `⚠️ Infracciones actuales: ${userData.count}/${MAX_INFRACTIONS}`
         );
     } catch {}
@@ -108,7 +93,7 @@ async function handleActivity(member, name, channel) {
 
         try {
             await member.timeout(TIMEOUT_DURATION, 'Exceder límite de actividades prohibidas');
-            await member.send(`⏱ Has recibido un timeout de 4 horas por iniciar actividades no permitidas.`);
+            await member.send(`⏱ Has recibido un timeout de 4 horas por exceder el límite de infracciones.`);
         } catch {}
 
         if (userData.timeouts >= MAX_TIMEOUTS) {
@@ -117,49 +102,48 @@ async function handleActivity(member, name, channel) {
             } catch {}
         }
     }
-
-    blockedUsers.set(member.id, true);
-
-    try {
-        await channel.permissionOverwrites.edit(member, { UseApplicationCommands: false });
-    } catch {}
-
-    setTimeout(async () => {
-        try { await channel.permissionOverwrites.delete(member.id); } catch {}
-        blockedUsers.delete(member.id);
-    }, PERMISSION_RESET_TIME);
 }
 
-// ---------------- EVENTO ----------------
+// ---------------- DETECCIÓN DE STREAMING ----------------
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const member = newState.member;
     if (!member || member.user.bot) return;
 
-    const oldActivities = oldState?.activities?.map(a => a.name) || [];
-    const newActivities = newState?.activities?.map(a => a.name) || [];
-    console.log(`[DEBUG] ${member.user.tag} cambió de actividades: old=${oldActivities}, new=${newActivities}`);
+    // Si empieza a compartir pantalla
+    if (newState.streaming && !oldState.streaming) {
+        const modChannel = await client.channels.fetch(MOD_CHANNEL_ID);
+        if (!modChannel) return;
 
-    for (const name of newActivities) {
-        if (!oldActivities.includes(name)) {
-            console.log(`[Actividad detectada] Usuario: ${member.user.tag}, Actividad: ${name}`);
-            await handleActivity(member, name, newState.channel);
-        }
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`sumar-${member.id}`)
+                .setLabel('Sumar infracción')
+                .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+                .setCustomId(`permitido-${member.id}`)
+                .setLabel('Permitido')
+                .setStyle(ButtonStyle.Success)
+        );
+
+        await modChannel.send({
+            content: `⚠️ Usuario: ${member} compartió pantalla en ${newState.channel}`,
+            components: [row]
+        });
     }
 });
 
-// ---------------- PRUEBAS ----------------
-client.on('voiceStateUpdate', async (oldState, newState) => {
-    const member = newState.member;
-    if (!member || member.user.bot) return;
+// ---------------- BOTONES ----------------
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
 
-    const oldActivities = oldState?.activities?.map(a => a.name) || [];
-    const newActivities = newState?.activities?.map(a => a.name) || [];
+    const [accion, userId] = interaction.customId.split('-');
+    const member = await interaction.guild.members.fetch(userId);
 
-    for (const name of newActivities) {
-        if (!oldActivities.includes(name)) {
-            console.log(`[PRUEBA] Usuario: ${member.user.tag}, Actividad detectada: ${name}`);
-            await handleActivity(member, name, newState.channel);
-        }
+    if (accion === 'sumar') {
+        await applyInfraction(member, 'Contenido inapropiado detectado por moderación');
+        await interaction.reply({ content: `✅ Infracción aplicada a ${member}`, ephemeral: true });
+    } else if (accion === 'permitido') {
+        await interaction.reply({ content: `✅ Marcado como permitido`, ephemeral: true });
     }
 });
 
