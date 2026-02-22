@@ -144,12 +144,21 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
 // ---------------- BOTONES Y MODAL ----------------
 client.on('interactionCreate', async interaction => {
+    // BOTONES
     if (interaction.isButton()) {
         const [accion, userId] = interaction.customId.split('-');
         const member = await interaction.guild.members.fetch(userId);
 
+        // Deshabilitar botones inmediatamente
+        const disabledRow = interaction.message.components.map(row => {
+            row.components.forEach(button => button.setDisabled(true));
+            return row;
+        });
+        await interaction.update({ components: disabledRow });
+        console.log(`[INFO] Botones deshabilitados para ${member.user.tag}`);
+
         if (accion === 'sumar') {
-            // Crear modal para justificación
+            // Mostrar modal de justificación
             const modal = new ModalBuilder()
                 .setCustomId(`modal-${userId}`)
                 .setTitle('Justificación de infracción')
@@ -164,9 +173,10 @@ client.on('interactionCreate', async interaction => {
                 );
             await interaction.showModal(modal);
         } else if (accion === 'permitido') {
-            await interaction.reply({ content: `✅ Marcado como permitido`, ephemeral: true });
             console.log(`[INFO] Moderador marcó como permitido a ${member.user.tag}`);
         }
+
+    // MODAL SUBMIT
     } else if (interaction.type === InteractionType.ModalSubmit) {
         const userId = interaction.customId.split('-')[1];
         const member = await interaction.guild.members.fetch(userId);
