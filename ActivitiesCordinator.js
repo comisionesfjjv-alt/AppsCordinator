@@ -68,7 +68,7 @@ async function applyInfractionDecay(userData) {
     return userData;
 }
 
-async function applyInfraction(member, reason) {
+async function applyInfraction(member, reason, channel) {
     let userData = await Infraction.findOne({ userId: member.id });
     if (userData) userData = await applyInfractionDecay(userData);
     if (!userData) userData = new Infraction({ userId: member.id });
@@ -79,15 +79,22 @@ async function applyInfraction(member, reason) {
 
     console.log(`[INFO] Se aplicó infracción a ${member.user.tag}. Total infracciones: ${userData.count}/${MAX_INFRACTIONS}`);
 
+    // Mensaje DM al usuario
     try {
         await member.send(
             `❌ Has recibido una infracción: ${reason}\n` +
             `⚠️ Infracciones actuales: ${userData.count}/${MAX_INFRACTIONS}\n` +
             `⏱ Timeouts acumulados: ${userData.timeouts}/${MAX_TIMEOUTS}`
         );
-        console.log(`[INFO] Mensaje de infracción enviado a ${member.user.tag}`);
+        console.log(`[INFO] DM enviado a ${member.user.tag}`);
     } catch {
         console.log(`[WARN] No se pudo enviar DM a ${member.user.tag}`);
+    }
+
+    // Mensaje actualizado en canal
+    if (channel) {
+        await channel.send(`⚠️ Infracción aplicada a ${member}: "${reason}"`);
+        console.log(`[INFO] Mensaje de infracción publicado en canal de moderación`);
     }
 
     if (userData.count >= MAX_INFRACTIONS) {
@@ -96,7 +103,7 @@ async function applyInfraction(member, reason) {
         await userData.save();
 
         try {
-            await member.timeout(TIMEOUT_DURATION, 'Exceder límite de actividades prohibidas');
+            await member.timeout(TIMEOUT_DURATION, 'Exceder límite de infracciones');
             await member.send(`⏱ Has recibido un timeout de 4 horas por exceder el límite de infracciones.`);
             console.log(`[INFO] Timeout aplicado a ${member.user.tag}`);
         } catch {
@@ -105,7 +112,7 @@ async function applyInfraction(member, reason) {
 
         if (userData.timeouts >= MAX_TIMEOUTS) {
             try {
-                await member.ban({ reason: 'Exceder límite de timeouts por actividades prohibidas' });
+                await member.ban({ reason: 'Exceder límite de timeouts por infracciones' });
                 console.log(`[INFO] Usuario ${member.user.tag} baneado tras exceder timeouts`);
             } catch {
                 console.log(`[WARN] No se pudo banear a ${member.user.tag}`);
@@ -148,7 +155,7 @@ client.on('interactionCreate', async interaction => {
         const [accion, userId] = interaction.customId.split('-');
         const member = await interaction.guild.members.fetch(userId);
 
-        // Reconstruir botones deshabilitados correctamente
+        // Reconstruir botones deshabilitados
         const disabledRow = interaction.message.components.map(row => {
             return new ActionRowBuilder().addComponents(
                 row.components.map(button =>
@@ -165,6 +172,7 @@ client.on('interactionCreate', async interaction => {
         console.log(`[INFO] Botones deshabilitados para ${member.user.tag}`);
 
         if (accion === 'sumar') {
+            // Mostrar modal de justificación
             const modal = new ModalBuilder()
                 .setCustomId(`modal-${userId}`)
                 .setTitle('Justificación de infracción')
@@ -178,7 +186,9 @@ client.on('interactionCreate', async interaction => {
                     )
                 );
             await interaction.showModal(modal);
+
         } else if (accion === 'permitido') {
+            await interaction.reply({ content: `✅ Moderador marcó como permitido a ${member.user.tag}`, ephemeral: true });
             console.log(`[INFO] Moderador marcó como permitido a ${member.user.tag}`);
         }
 
@@ -187,7 +197,7 @@ client.on('interactionCreate', async interaction => {
         const member = await interaction.guild.members.fetch(userId);
         const justification = interaction.fields.getTextInputValue('justificacion');
 
-        await applyInfraction(member, justification);
+        await applyInfraction(member, justification, interaction.channel);
         await interaction.reply({ content: `✅ Infracción aplicada a ${member.user.tag} con justificación: "${justification}"`, ephemeral: true });
         console.log(`[INFO] Infracción aplicada con justificación para ${member.user.tag}`);
     }
